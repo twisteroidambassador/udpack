@@ -1,6 +1,10 @@
 # UDPack
 UDPack is an extensible generic UDP packet obfuscator. The purpose of this application is to sit in the path of a UDP data stream, and obfuscate, deobfuscate or otherwise modify the packets.
 
+Python 3.4 or above is required, since this script uses the `asyncio` library. Currently there are no other dependencies.
+
+**Warning:** It must be stressed that the purpose of this application is *obfuscation*, not *encryption*. Many design decisions have been (and will be) deliberately made against best practices in cryptography, so in all likelihood the obfuscation methods will not resist crypto analysis. **DO NOT** rely on the obfuscation for confidentiality of your data!!!
+
 At this stage the script includes the following "packers" (obfuscation methods):
 
 * Straight through: no obfuscation
