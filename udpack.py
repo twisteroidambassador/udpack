@@ -9,6 +9,12 @@ PACKER_DEFAULT_CONNECT_TIMEOUT = 30
 PACKER_DEFAULT_IDLE_TIMEOUT = 60
 
 class UDPackReceiverProtocol(asyncio.DatagramProtocol):
+    '''asyncio protocol object responsible for listening from downstream.
+    
+    Handles connection creation: all packets received from the same (host, port)
+    are considered to be one connection, and gets a packer assigned to it.
+    The packer manages upstream sockets and connection timeout.'''
+    
     def __init__(self, loop, remoteaddr, packer, conf):
         self.logger = logging.getLogger('udpack.receiver')
         self.accesslog = logging.getLogger('access')
@@ -50,6 +56,8 @@ class UDPackReceiverProtocol(asyncio.DatagramProtocol):
     
     
 class UDPackDispatcherProtocol(asyncio.DatagramProtocol):
+    '''asyncio protocol object responsible for listening from upstream.
+    '''
     def __init__(self, loop, remoteaddr, packer):
         self.logger = logging.getLogger('udpack.dispatcher')
         
@@ -82,6 +90,17 @@ class UDPackDispatcherProtocol(asyncio.DatagramProtocol):
 
 
 class UDPackStraightThroughPacker():
+    '''Basic packer which does not modify packets. Other packers should inherit from this.
+    
+    Apart from modifying packets, this object also handles connection timeout.
+    
+    In most cases, in order to implement a new packer, just override the 
+    following functions:
+        initialize()
+        pack()
+        unpack()
+    '''
+    
     def __init__(self, loop, remoteaddr, receiver_protocol, receiver_recv_addr,
             config = None,
             connect_timeout = PACKER_DEFAULT_CONNECT_TIMEOUT,
@@ -114,6 +133,11 @@ class UDPackStraightThroughPacker():
         self.dispatcher_task.add_done_callback(self.set_dispatcher_ready)
         
     def initialize(self, config):
+        '''Packer-specific initialization.
+        
+        Arguments:
+        config: the entire configparser object created from the config file.
+            Packers should read any required configuration from it.'''
         pass
         
     def check_timeout(self):
@@ -149,7 +173,7 @@ class UDPackStraightThroughPacker():
         self.last_from_receiver = self.loop.time()
         #self.update_timeout()
         
-        self.loop.call_soon(self.process_forward, data)
+        self.loop.call_soon(self.process_upstream, data)
     
     def from_dispatcher(self, data):
         self.logger.info('Received data from dispatcher')
@@ -162,7 +186,7 @@ class UDPackStraightThroughPacker():
         self.last_from_dispatcher = self.loop.time()
         #self.update_timeout()
         
-        self.loop.call_soon(self.process_backward, data)
+        self.loop.call_soon(self.process_downstream, data)
     
     def send_via_dispatcher(self, data):
         self.logger.debug('Sending data via dispatcher')
@@ -172,48 +196,43 @@ class UDPackStraightThroughPacker():
         self.logger.debug('Sending data via receiver')
         self.receiver.transport.sendto(data, self.receiver_recv_addr)
     
-    # ====================
-    # Modify the two following functions to reverse direction
-    # ====================
-    def process_forward(self, data):
+    # The following two functions define the direction of the packer / unpacker.
+    # UDPackUnpackerMixIn swaps these two functions, so inheriting from that
+    # will reverse the direction.
+    def process_upstream(self, data):
         self.pack(data, self.send_via_dispatcher)
     
-    def process_backward(self, data):
+    def process_downstream(self, data):
         self.unpack(data, self.send_via_receiver)
     
     # ====================
     # Modify the two following functions to implement new packing logic
     # ====================
     def pack(self, data, send_fn):
+        '''Obfuscate data, or do the reverse of whatever unpack() does.
+        
+        Arguments:
+        data: a bytes object containing the data in a received UDP packet.
+        send_fn: a function that should be used to send UDP packets. Takes a 
+            single argument of data to be sent.
+            Either call it directly: 
+                send_fn(data_to_be_sent)
+            or schedule it with asyncio: 
+                self.loop.call_soon(send_fn, data_to_be_sent)
+        '''
+        
         self.logger.debug('Packing data')
         self.loop.call_soon(send_fn, data)
     
     def unpack(self, data, send_fn):
+        '''Deobfuscate data, or do the reverse of whatever pack() does.
+        
+        Arguments: see pack().
+        '''
+        
         self.logger.debug('Unpacking data')
         self.loop.call_soon(send_fn, data)
         
-    '''def update_timeout(self):
-        if self.timeout_handle is not None:
-            self.timeout_handle.cancel()
-        if not self.connection_established:
-            self.timeout_handle = self.loop.call_later(
-                    self.connect_timeout, self.connect_timed_out)
-        else:
-            self.timeout_handle = self.loop.call_later(
-                    self.idle_timeout, self.idle_timed_out)
-    
-    def connect_timed_out(self):
-        self.logger.info('Packer connect timed out')
-        self.accesslog.info('Connection from {} timed out before bi-directional '
-                'connection is established'.format(self.receiver_recv_addr))
-        self.disconnect()
-    
-    def idle_timed_out(self):
-        self.logger.info('Packer idle timed out')
-        self.accesslog.info('Connection from {} timed out'.format(
-                                            self.receiver_recv_addr))
-        self.disconnect()'''
-    
     def disconnect(self):
         self.logger.info('Packer disconnecting')
         self.accesslog.info('Connection from {} disconnecting'.format(
@@ -233,16 +252,29 @@ class UDPackStraightThroughPacker():
         self.dispatcher = d_protocol
 
 class UDPackUnpackerMixIn():
-    def process_forward(self, data):
+    '''Make a packer into an unpacker by reversing direction.
+    
+    Inherit from this and a packer to make an unpacker:
+        class UDPackFooBarUnpacker(UDPackUnpackerMixIn, UDPackFooBarPacker):
+            pass
+    '''
+    
+    def process_upstream(self, data):
         self.unpack(data, self.send_via_dispatcher)
     
-    def process_backward(self, data):
+    def process_downstream(self, data):
         self.pack(data, self.send_via_receiver)
 
 class UDPackStraightThroughUnpacker(UDPackUnpackerMixIn, UDPackStraightThroughPacker):
+    '''Example unpacker. Demonstrates how to inherit from UDPackUnpackerMixIn.
+    '''
     pass
 
 class UDPackShufflePacker(UDPackStraightThroughPacker):
+    '''Packer that shuffles data byte order with a PSRNG.
+    
+    The PSRNG is seeded by the length of the packet + user selected key.'''
+    
     def initialize(self, config):
         self.random_seed_key = config['shuffle'].getint('random_seed_key')
         
@@ -354,6 +386,7 @@ def main_cli():
     
     logger.debug('Config file read')
     
+    # Collect options for main application
     local_config = {}
     for c in ('remote_addr', 'listen_addr', 'packer'):
         if vars(args)[c] is not None:
@@ -378,6 +411,7 @@ def main_cli():
         raise RuntimeError('Packer {} not recognized'.format(local_config['packer']))
     
     
+    # Create listening connection
     loop = asyncio.get_event_loop()
     receiver = loop.create_datagram_endpoint(
         lambda: UDPackReceiverProtocol(loop, local_config['remote_addr'], 
@@ -385,9 +419,12 @@ def main_cli():
         local_addr = local_config['listen_addr'])
     transport, protocol = loop.run_until_complete(receiver)
     
+    # Run until interrupt
     try:
         signal.signal(signal.SIGTERM, sigterm_handler)
         while True:
+            # Workaround for Python Issue 23057 in Windows
+            # https://bugs.python.org/issue23057
             loop.run_until_complete(asyncio.sleep(0.2))
     except (KeyboardInterrupt, SystemExit) as e:
         logger.info("Received {}".format(repr(e)))
