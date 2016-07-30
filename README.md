@@ -9,6 +9,7 @@ At this stage the script includes the following "packers" (obfuscation methods):
 
 * Straight through: no obfuscation
 * Shuffle: shuffle the order of data bytes in each packet
+* XORPatch: emulate the famous "XOR patch" for OpenVPN. This should be helpful in these scenarios: vanilla OpenVPN client ==> XORPatchPacker ==> XOR-patched OpenVPN server, and XOR-Patched OpenVPN client ==> XORPatchUnpacker ==> vanilla OpenVPN server. (Note that this packer has not been actually tested to work in these scenarios. [Please report your results here: Issue 1](https://github.com/twisteroidambassador/udpack/issues/1).)
 
 ## Typical usage
 

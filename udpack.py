@@ -3,7 +3,12 @@
 import asyncio
 import logging
 
+# Used in UDPackShufflePacker
 import random
+# Used in UDPackXORPatchPacker
+import math
+
+# Packer-specific dependencies are imported inside each packer class
 
 PACKER_DEFAULT_CONNECT_TIMEOUT = 30
 PACKER_DEFAULT_IDLE_TIMEOUT = 60
@@ -275,6 +280,8 @@ class UDPackShufflePacker(UDPackStraightThroughPacker):
     
     The PSRNG is seeded by the length of the packet + user selected key.'''
     
+    
+    
     def initialize(self, config):
         self.random_seed_key = config['shuffle'].getint('random_seed_key')
         
@@ -303,6 +310,103 @@ class UDPackShufflePacker(UDPackStraightThroughPacker):
         return self.shuffle_sequence[len]
 
 class UDPackShuffleUnpacker(UDPackUnpackerMixIn, UDPackShufflePacker):
+    pass
+
+class UDPackXORPatchPacker(UDPackStraightThroughPacker):
+    '''Packer that emulates the "XOR patch" available for OpenVPN.
+    
+    https://tunnelblick.net/cOpenvpn_xorpatch.html
+    '''
+    
+    
+    
+    def initialize(self, config):
+        m = config['xorpatch']['method'].lower()
+        if m == 'xormask':
+            self.xormask = bytes(config['xorpatch']['xormask'], encoding='utf-8')
+            self.scramble = self.scramble_xormask
+            self.unscramble = self.scramble_xormask
+        elif m == 'reverse':
+            self.scramble = self.scramble_reverse
+            self.unscramble = self.scramble_reverse
+        elif m == 'xorptrpos':
+            self.scramble = self.scramble_xorptrpos
+            self.unscramble = self.scramble_xorptrpos
+        elif m == 'obfuscate':
+            self.xormask = bytes(config['xorpatch']['xormask'], encoding='utf-8')
+            self.scramble = self.scramble_obfuscate
+            self.unscramble = self.unscramble_obfuscate
+        else:
+            raise RuntimeError('Scramble method not recognized: {}'.format(m))
+    
+    def pack(self, data, send_fn):
+        self.loop.call_soon(send_fn, self.scramble(data))
+    
+    def unpack(self, data, send_fn):
+        self.loop.call_soon(send_fn, self.unscramble(data))
+    
+    def xor_buffer_mask(self, data, mask):
+        '''Byte-wise XOR between data and mask (repeated if necessary).
+        
+        data, mask should be bytes or bytearrays.'''
+        
+        mask_pad = math.ceil(len(data) / len(mask)) * mask
+        return bytes(a^b for a,b in zip(data, mask_pad))
+    
+    def xor_ptr_pos(self, data):
+        '''XOR each byte with its (1-based) position.
+        '''
+        return bytes( ((i+1) & 255) ^ d for i,d in enumerate(data))
+    
+    def reverse_1plus(self, data):
+        '''Reverse data[1:].
+        '''
+        
+        if len(data) <= 2:
+            return data
+        else:
+            d = bytearray(data)
+            d[1:] = d[:0:-1]
+            return bytes(d)
+    
+    def scramble(self, data):
+        '''Placeholder function for scrambling data. Replaced by one of the 
+        scramble_* functions during initialize().
+        '''
+        
+        raise RuntimeError('Execution should not reach here')
+    
+    def unscramble(self, data):
+        '''Placeholder function for unscrambling data. Replaced by one of the 
+        scramble_* functions during initialize().
+        '''
+        
+        raise RuntimeError('Execution should not reach here')
+    
+    def scramble_xormask(self, data):
+        return self.xor_buffer_mask(data, self.xormask)
+    
+    def scramble_reverse(self, data):
+        return self.reverse_1plus(data)
+    
+    def scramble_xorptrpos(self, data):
+        return self.xor_ptr_pos(data)
+    
+    def scramble_obfuscate(self, data):
+        d = self.xor_ptr_pos(data)
+        d = self.reverse_1plus(d)
+        d = self.xor_ptr_pos(d)
+        d = self.xor_buffer_mask(d, self.xormask)
+        return d
+    
+    def unscramble_obfuscate(self, data):
+        d = self.xor_buffer_mask(data, self.xormask)
+        d = self.xor_ptr_pos(d)
+        d = self.reverse_1plus(d)
+        d = self.xor_ptr_pos(d)
+        return d
+
+class UDPackXORPatchUnpacker(UDPackUnpackerMixIn, UDPackXORPatchPacker):
     pass
     
 def main_cli():
@@ -405,7 +509,9 @@ def main_cli():
             'straightthroughpacker': UDPackStraightThroughPacker,
             'straightthroughunpacker': UDPackStraightThroughUnpacker,
             'shufflepacker': UDPackShufflePacker,
-            'shuffleunpacker': UDPackShuffleUnpacker
+            'shuffleunpacker': UDPackShuffleUnpacker,
+            'xorpatchpacker': UDPackXORPatchPacker,
+            'xorpatchunpacker': UDPackXORPatchUnpacker
             }[local_config['packer'].lower()]
     except KeyError:
         raise RuntimeError('Packer {} not recognized'.format(local_config['packer']))
