@@ -20,7 +20,9 @@ class UDPackReceiverProtocol(asyncio.DatagramProtocol):
     are considered to be one connection, and gets a packer assigned to it.
     The packer manages upstream sockets and connection timeout.'''
     
-    def __init__(self, loop, remoteaddr, packer, conf):
+    def __init__(self, loop, remoteaddr, packer, conf, 
+            connect_timeout = PACKER_DEFAULT_CONNECT_TIMEOUT,
+            idle_timeout = PACKER_DEFAULT_IDLE_TIMEOUT):
         self.logger = logging.getLogger('udpack.receiver')
         self.accesslog = logging.getLogger('access')
         
@@ -28,6 +30,9 @@ class UDPackReceiverProtocol(asyncio.DatagramProtocol):
         self.remoteaddr = remoteaddr
         self.packer = packer
         self.conf = conf
+        
+        self.connect_timeout = connect_timeout
+        self.idle_timeout = idle_timeout
         
         self.connections = {}
     
@@ -56,7 +61,8 @@ class UDPackReceiverProtocol(asyncio.DatagramProtocol):
     def new_connection(self, addr):
         self.logger.info('Creating new connection from {}'.format(addr))
         self.accesslog.info('New connection from {}'.format(addr))
-        newpacker = self.packer(self.loop, self.remoteaddr, self, addr, self.conf)
+        newpacker = self.packer(self.loop, self.remoteaddr, self, addr, 
+                self.conf, self.connect_timeout, self.idle_timeout)
         self.connections[addr] = newpacker
     
     
@@ -471,15 +477,15 @@ def main_cli():
     accesslogger.setLevel(logging.DEBUG)
     
     accesslogconsole = logging.StreamHandler()
-    accesslogconsoleformatter = logging.Formatter('[%(asctime)s]%(message)s')
-    #accesslogconsole.setFormatter(accesslogconsoleformatter)
+    accesslogfileformatter = logging.Formatter('[%(asctime)s]%(message)s')
+    #accesslogconsole.setFormatter(accesslogfileformatter)
     accesslogconsole.setLevel(logging.INFO)
     
     accesslogger.addHandler(accesslogconsole)
     
     if args.access_log is not None:
         accesslogfile = logging.FileHandler(args.access_log)
-        accesslogfile.setFormatter(accesslogconsoleformatter)
+        accesslogfile.setFormatter(accesslogfileformatter)
         accesslogfile.setLevel(logging.INFO)
         accesslogger.addHandler(accesslogfile)
     
@@ -504,6 +510,12 @@ def main_cli():
     for c in ('remote_addr', 'listen_addr'):
         local_config[c] = tuple(local_config[c].split(','))
     
+    local_config['connect_timeout'] = conffile.getint('udpack', 
+            'connect_timeout', fallback=PACKER_DEFAULT_CONNECT_TIMEOUT)
+    
+    local_config['idle_timeout'] = conffile.getint('udpack',
+            'idle_timeout', fallback=PACKER_DEFAULT_IDLE_TIMEOUT)
+    
     try:
         local_config['packer'] = {
             'straightthroughpacker': UDPackStraightThroughPacker,
@@ -521,7 +533,9 @@ def main_cli():
     loop = asyncio.get_event_loop()
     receiver = loop.create_datagram_endpoint(
         lambda: UDPackReceiverProtocol(loop, local_config['remote_addr'], 
-                local_config['packer'], conffile),
+                local_config['packer'], conffile,
+                local_config['connect_timeout'],
+                local_config['idle_timeout']),
         local_addr = local_config['listen_addr'])
     transport, protocol = loop.run_until_complete(receiver)
     
