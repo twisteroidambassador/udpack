@@ -8,17 +8,20 @@ Python 3.4 or above is required, since this script uses the `asyncio` library. C
 At this stage the script includes the following "packers" (obfuscation methods):
 
 * Straight through: do nothing, just forward the packet along
+
 * Shuffle: shuffle the order of data bytes in each packet
+
 * XORPatch: emulate the famous "XOR patch" for OpenVPN. This should be helpful in these scenarios: vanilla OpenVPN client ==> XORPatchPacker ==> XOR-patched OpenVPN server, and XOR-Patched OpenVPN client ==> XORPatchUnpacker ==> vanilla OpenVPN server. (Note that this packer has not been actually tested to work in these scenarios. [Please report your results here: Issue 1](https://github.com/twisteroidambassador/udpack/issues/1).)
+
 * Toy Model Encryption: implements a toy model padding + encryption + authentication scheme, using the Mersenne Twister PRNG as a stream cipher and truncated SHA-1 HMAC for authentication. Each packet can be padded to a random length, and every byte in the packet is randomized so there is no obvious packet signature. The protocol has a minimal overhead of 8 bytes. As the name implies, the cryptographic strength of this "encryption" scheme is quite low.
 
-There is also a "delay" version, which randomly delays each obfuscated packet to help thwart inter-arrival time analysis. (Packets may be sent out of order.)
+  There is also a "delay" version, which randomly delays each obfuscated packet to help thwart inter-arrival time analysis. (Packets may be sent out of order.)
 
 ## Typical usage
 
 A "packer" is a particular implementation of obfuscation method, obfuscating packets travelling upstream and deobfuscating packets travelling downstream. An "unpacker" is the same thing, implemented in the opposite direction.
 
-Typically, an unpacker is set up near the server, with its `remote_addr` pointing to the listening address:port of the server. One or more packer is set up near the client(s), pointing at the listening addr:port of the unpacker. All packers and unpackers should have matching configurations. Finally, clients connect to the packer's listening addr:port. The packer obfuscates any traffic it receives and sends them to the unpacker, which deobfuscate and forward them to the server.
+Typically, an unpacker is set up near the server, with its `remote_addr` pointing to the listening `address:port` of the server. One or more packer is set up near the client(s), pointing at the listening `addr:port` of the unpacker. All packers and unpackers should have matching configurations. Finally, clients connect to the packer's listening `addr:port`. The packer obfuscates any traffic it receives and sends them to the unpacker, which deobfuscate and forward them to the server.
 
 
                 raw data         obfuscated data           raw data
