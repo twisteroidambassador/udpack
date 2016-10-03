@@ -3,15 +3,17 @@
 import asyncio
 import logging
 
-# Used in UDPackShufflePacker
+# Used in UDPackShufflePacker, UDPackToyModelEncryptionPacker
 import random
 # Used in UDPackXORPatchPacker
 import math
-
-# Packer-specific dependencies are imported inside each packer class
+# Used in UDPackToyModelEncryptionPacker
+import hmac
 
 PACKER_DEFAULT_CONNECT_TIMEOUT = 30
 PACKER_DEFAULT_IDLE_TIMEOUT = 60
+
+CHECK_TIMEOUT_INTERVAL = 1
 
 class UDPackReceiverProtocol(asyncio.DatagramProtocol):
     '''asyncio protocol object responsible for listening from downstream.
@@ -37,7 +39,7 @@ class UDPackReceiverProtocol(asyncio.DatagramProtocol):
         self.connections = {}
     
     def connection_made(self, transport):
-        self.logger.debug('Receiver connection_made')
+        self.logger.info('Receiver connection_made')
         self.transport = transport
     
     def connection_lost(self, exc):
@@ -77,7 +79,7 @@ class UDPackDispatcherProtocol(asyncio.DatagramProtocol):
         self.packer = packer
     
     def connection_made(self, transport):
-        self.logger.debug('Dispatcher connection_made')
+        self.logger.info('Dispatcher connection_made')
         self.transport = transport
         self.remoteaddr = self.transport.get_extra_info('peername')
     
@@ -134,7 +136,7 @@ class UDPackStraightThroughPacker():
         #self.timeout_handle = None
         self.last_from_receiver = self.loop.time()
         self.last_from_dispatcher = self.loop.time()
-        self.loop.call_later(1, self.check_timeout)
+        self.loop.call_later(CHECK_TIMEOUT_INTERVAL, self.check_timeout)
         
         self.connection_established = False
         self.dispatcher = None
@@ -147,9 +149,9 @@ class UDPackStraightThroughPacker():
         '''Packer-specific initialization.
         
         Arguments:
-        config: the entire configparser object created from the config file.
-            Packers should read any required configuration from it.'''
-        pass
+        config: a dictionary (or configparser object created from the config 
+            file). Packers should read any required configuration from it.'''
+        assert not hasattr(super(), 'initialize')
         
     def check_timeout(self):
         self.logger.debug('Checking timeout status')
@@ -167,10 +169,10 @@ class UDPackStraightThroughPacker():
             self.disconnect()
             return
         else:
-            self.loop.call_later(1, self.check_timeout)
+            self.loop.call_later(CHECK_TIMEOUT_INTERVAL, self.check_timeout)
         
     def set_dispatcher_ready(self, future):
-        self.logger.debug('Dispatcher is ready')
+        self.logger.info('Dispatcher is ready')
         self.dispatcher_ready = True
     
     def from_receiver(self, data):
@@ -180,7 +182,7 @@ class UDPackStraightThroughPacker():
                 lambda future: self.from_receiver(data))
             return
             
-        self.logger.debug('Received data from receiver')
+        self.logger.info('Received data from receiver')
         self.last_from_receiver = self.loop.time()
         #self.update_timeout()
         
@@ -200,11 +202,11 @@ class UDPackStraightThroughPacker():
         self.loop.call_soon(self.process_downstream, data)
     
     def send_via_dispatcher(self, data):
-        self.logger.debug('Sending data via dispatcher')
+        self.logger.info('Sending data via dispatcher')
         self.dispatcher.transport.sendto(data)
     
     def send_via_receiver(self, data):
-        self.logger.debug('Sending data via receiver')
+        self.logger.info('Sending data via receiver')
         self.receiver.transport.sendto(data, self.receiver_recv_addr)
     
     # The following two functions define the direction of the packer / unpacker.
@@ -232,7 +234,7 @@ class UDPackStraightThroughPacker():
                 self.loop.call_soon(send_fn, data_to_be_sent)
         '''
         
-        self.logger.debug('Packing data')
+        self.logger.info('Packing data')
         self.loop.call_soon(send_fn, data)
     
     def unpack(self, data, send_fn):
@@ -241,7 +243,7 @@ class UDPackStraightThroughPacker():
         Arguments: see pack().
         '''
         
-        self.logger.debug('Unpacking data')
+        self.logger.info('Unpacking data')
         self.loop.call_soon(send_fn, data)
         
     def disconnect(self):
@@ -276,30 +278,71 @@ class UDPackUnpackerMixIn():
     def process_downstream(self, data):
         self.pack(data, self.send_via_receiver)
 
+class UDPackRandomDelayMixIn():
+    '''Delay each obfuscated packet by a random amount.'''
+    
+    def initialize(self, config):
+        random_method = config['randomdelay']['random_method']
+        
+        if random_method == 'uniform':
+            self.random_delay = self.random_delay_uniform
+            self.random_min = float(config['randomdelay']['min'])
+            self.random_max = float(config['randomdelay']['max'])
+        elif random_method == 'exp':
+            self.random_delay = self.random_delay_exp
+            self.random_mean = float(config['randomdelay']['mean'])
+            self.random_max = float(config['randomdelay']['max'])
+        
+        super().initialize(config)
+        
+    def random_delay(self):
+        '''Randomly choose amount of time to delay packet. 
+        
+        Replaced by one of the random_delay_* functions in initialize().'''
+        
+        assert False, 'Execution should not reach here'
+        
+    def random_delay_uniform(self):
+        return random.uniform(self.random_min, self.random_max)
+    
+    def random_delay_exp(self):
+        return max(random.expovariate(1.0 / self.random_mean), self.random_max)
+        
+    def pack(self, data, send_fn):
+        self.logger.info('Scheduling delayed packet')
+        super().pack(data, lambda d: self.loop.call_later(
+                                self.random_delay(), send_fn, d))
+
 class UDPackStraightThroughUnpacker(UDPackUnpackerMixIn, UDPackStraightThroughPacker):
     '''Example unpacker. Demonstrates how to inherit from UDPackUnpackerMixIn.
     '''
     pass
 
+class UDPackRandomDelayPacker(UDPackRandomDelayMixIn, UDPackStraightThroughPacker):
+    '''Delays each packet by a random amount.'''
+    pass
+
 class UDPackShufflePacker(UDPackStraightThroughPacker):
-    '''Packer that shuffles data byte order with a PSRNG.
+    '''Packer that shuffles data byte order with a PRNG.
     
-    The PSRNG is seeded by the length of the packet + user selected key.'''
+    The PRNG is seeded by the length of the packet + user selected key.'''
     
     
     
     def initialize(self, config):
-        self.random_seed_key = config['shuffle'].getint('random_seed_key')
+        self.random_seed_key = int(config['shuffle']['random_seed_key'])
         
         self.shuffle_sequence = {}
         
+        super().initialize(config)
+        
     def pack(self, data, send_fn):
-        self.logger.debug('Shuffling data')
+        self.logger.info('Shuffling data')
         shuffled = bytes(data[i] for i in self.get_shuffle_sequence(len(data))[0])
         self.loop.call_soon(send_fn, shuffled)
     
     def unpack(self, data, send_fn):
-        self.logger.debug('Unshuffling data')
+        self.logger.info('Unshuffling data')
         unshuffled = bytes(data[i] for i in self.get_shuffle_sequence(len(data))[1])
         self.loop.call_soon(send_fn, unshuffled)
     
@@ -343,7 +386,9 @@ class UDPackXORPatchPacker(UDPackStraightThroughPacker):
             self.scramble = self.scramble_obfuscate
             self.unscramble = self.unscramble_obfuscate
         else:
-            raise RuntimeError('Scramble method not recognized: {}'.format(m))
+            raise RuntimeError('Invalid scramble method "{}"'.format(m))
+        
+        super().initialize(config)
     
     def pack(self, data, send_fn):
         self.loop.call_soon(send_fn, self.scramble(data))
@@ -380,14 +425,14 @@ class UDPackXORPatchPacker(UDPackStraightThroughPacker):
         scramble_* functions during initialize().
         '''
         
-        raise RuntimeError('Execution should not reach here')
+        assert False, 'Execution should not reach here'
     
     def unscramble(self, data):
         '''Placeholder function for unscrambling data. Replaced by one of the 
         scramble_* functions during initialize().
         '''
         
-        raise RuntimeError('Execution should not reach here')
+        assert False, 'Execution should not reach here'
     
     def scramble_xormask(self, data):
         return self.xor_buffer_mask(data, self.xormask)
@@ -413,6 +458,184 @@ class UDPackXORPatchPacker(UDPackStraightThroughPacker):
         return d
 
 class UDPackXORPatchUnpacker(UDPackUnpackerMixIn, UDPackXORPatchPacker):
+    pass
+
+class UDPackToyModelEncryptionPacker(UDPackStraightThroughPacker):
+    '''This packer pads and "encrypts" each individual packet.
+    
+    It uses a toy model "encrypt then authenticate" scheme, with the Mersenne 
+    Twister PRNG standing in as a stream cipher, and a truncated SHA-1 HMAC. 
+    Of course, this "encryption" scheme is extremely weak and would not stand
+    up to any cryptoanalysis. It is designed to have minimal overhead (6 bytes),
+    and to randomize the entire packet to hide any signatures.
+    
+    The plaintext packet is also padded to a random length to thwart analysis 
+    of packet length. This adds another 2-byte-minimum overhead.
+    '''
+    
+    IV_LENGTH = 2
+    HMAC_LENGTH = 4
+    SIZE_LENGTH = 2
+    
+    
+    class HMACCheckFailedException(Exception):
+        pass
+    
+    def initialize(self, config):
+        self.random_seed_key = int(config['toymodelenc']['random_seed_key'])
+        self.hmac_key = config['toymodelenc']['hmac_key'].encode(encoding='utf-8')
+        
+        random_method = config['toymodelenc']['random_method'].lower()
+        
+        if random_method == 'off':
+            self.get_random_length = self.get_random_length_disabled
+        elif random_method == 'uniform':
+            self.get_random_length = self.get_random_length_uniform
+            self.random_uniform_min = int(config['toymodelenc']['random_uniform_min'])
+            self.random_uniform_max = int(config['toymodelenc']['random_uniform_max'])
+        elif random_method == 'triangle':
+            self.get_random_length = self.get_random_length_triangle
+            self.random_triangle_min = float(config['toymodelenc']['random_triangle_min'])
+            self.random_triangle_max = float(config['toymodelenc']['random_triangle_max'])
+            self.random_triangle_mode = float(config['toymodelenc']['random_triangle_mode'])
+        elif random_method == 'list':
+            self.get_random_length = self.get_random_length_list
+            l = config['toymodelenc']['random_list']
+            if isinstance(l, str):
+                l = l.split(',')
+            self.random_list = list(map(int, l))
+        elif random_method == 'gaussian':
+            self.get_random_length = self.get_random_length_normal
+            self.random_gauss_mu = float(config['toymodelenc']['random_gauss_mu'])
+            self.random_gauss_sigma = float(config['toymodelenc']['random_gauss_sigma'])
+            self.random_gauss_min = float(config['toymodelenc']['random_gauss_min'])
+            self.random_gauss_max = float(config['toymodelenc']['random_gauss_max'])
+        else:
+            raise RuntimeError('Invalid random_method "{}"'.format(random_method))
+        
+        super().initialize(config)
+    
+    def gen_bytestream(self, iv, key, length):
+        '''Generate a byte stream using Python's Random module.'''
+        
+        randstate = random.getstate()
+        
+        random.seed(iv + key)
+        bs = random.getrandbits(length * 8).to_bytes(length, byteorder='big')
+        
+        random.setstate(randstate)
+        
+        return bs
+    
+    def compute_HMAC(self, data):
+        '''Calculate HMAC of data and truncate to required length.'''
+        
+        return hmac.new(self.hmac_key, data, 'sha1').digest()[:self.HMAC_LENGTH]
+    
+    def check_HMAC(self, data, hmac_tag):
+        '''Chech the truncated HMAC against data.
+        
+        This is a naive comparison which is certainly vulnerable to timing
+        attacks and the like. Do not do this in a serious cryptographic
+        application.'''
+        
+        return hmac_tag == hmac.new(self.hmac_key, data, 'sha1').digest()[:self.HMAC_LENGTH]
+    
+    def toy_encrypt(self, data, total_length):
+        '''Pad, encrypt, and HMAC data.
+        
+        The name is chosen to really drive home the point that the "encryption" 
+        used here is atrouciously weak.'''
+        
+        self.logger.info('Encrypting data')
+        
+        pad_length = total_length - len(data) - self.IV_LENGTH \
+                     - self.SIZE_LENGTH - self.HMAC_LENGTH
+        
+        if pad_length < 0:
+            # Data too long, everything will not fit inside total_length
+            raise RuntimeError('Data of length {} will not fit in total_length {}'.
+                    format(len(data), total_length))
+        
+        iv = random.getrandbits(self.IV_LENGTH * 8)
+        plaintext = len(data).to_bytes(self.SIZE_LENGTH, byteorder='big') \
+                    + data + bytes(pad_length)
+        ciphertext = bytes(a^b for a,b in zip(plaintext, self.gen_bytestream(
+                                iv, self.random_seed_key, len(plaintext))))
+        
+        hmac_data = iv.to_bytes(self.IV_LENGTH, byteorder='big') + ciphertext
+        
+        hmac_tag = self.compute_HMAC(hmac_data)
+        
+        return hmac_tag + hmac_data
+    
+    def toy_decrypt(self, data):
+        '''Check HMAC and decrypt data.'''
+        
+        self.logger.info('Decrypting data')
+        
+        if not self.check_HMAC(data[self.HMAC_LENGTH:], data[:self.HMAC_LENGTH]):
+            raise UDPackToyModelEncryptionPacker.HMACCheckFailedException
+        
+        iv = int.from_bytes(data[self.HMAC_LENGTH : self.HMAC_LENGTH+self.IV_LENGTH], byteorder='big')
+        ciphertext = data[self.HMAC_LENGTH+self.IV_LENGTH:]
+        plaintext = bytes(a^b for a,b in zip(ciphertext, self.gen_bytestream(
+                                iv, self.random_seed_key, len(ciphertext))))
+        
+        payload_len = int.from_bytes(plaintext[:self.SIZE_LENGTH], byteorder='big')
+        
+        return plaintext[self.SIZE_LENGTH : self.SIZE_LENGTH+payload_len]
+    
+    def get_random_length(self):
+        '''Placeholder function for getting a random packet length. Replaced 
+        by one of the get_random_length_* functions during initialize().'''
+        
+        assert False, 'Execution should not reach here'
+    
+    def get_random_length_disabled(self):
+        return 0
+    
+    def get_random_length_uniform(self):
+        return random.choice(range(self.random_uniform_min,
+                                   self.random_uniform_max + 1))
+        
+    def get_random_length_triangle(self):
+        return round(random.triangular(self.random_triangle_min,
+                        self.random_triangle_max, self.random_triangle_mode))
+    
+    def get_random_length_list(self):
+        return random.choice(self.random_list)
+    
+    def get_random_length_normal(self):
+        r = random.gauss(self.random_gauss_mu, self.random_gauss_sigma)
+        r = max(min(r, self.random_gauss_max), self.random_gauss_min)
+        return round(r)
+        
+    def choose_packet_length(self, payload_length):
+        return max(self.get_random_length(), 
+                   payload_length + self.SIZE_LENGTH + self.IV_LENGTH + self.HMAC_LENGTH)
+    
+    def pack(self, data, send_fn):
+        self.logger.info('Packing')
+        l = self.choose_packet_length(len(data))
+        packed = self.toy_encrypt(data, l)
+        self.loop.call_soon(send_fn, packed)
+    
+    def unpack(self, data, send_fn):
+        self.logger.info('Unpacking')
+        try:
+            unpacked = self.toy_decrypt(data)
+            self.loop.call_soon(send_fn, unpacked)
+        except UDPackToyModelEncryptionPacker.HMACCheckFailedException:
+            self.logger.warning('Decryption HMAC check failed, possible tampered packet')
+
+class UDPackToyModelEncryptionUnpacker(UDPackUnpackerMixIn, UDPackToyModelEncryptionPacker):
+    pass
+
+class UDPackToyModelEncryptionDelayPacker(UDPackRandomDelayMixIn, UDPackToyModelEncryptionPacker):
+    pass
+
+class UDPackToyModelEncryptionDelayUnpacker(UDPackRandomDelayMixIn, UDPackUnpackerMixIn, UDPackToyModelEncryptionPacker):
     pass
     
 def main_cli():
@@ -447,9 +670,6 @@ def main_cli():
     
     args = parser.parse_args()
     
-    LISTEN_ADDRESS = ('127.0.0.1', 9000)
-    REMOTE_ADDRESS = ('45.55.154.125', 1194)
-    
     # Set logging
     logger = logging.getLogger('udpack')
     logger.setLevel(logging.DEBUG)
@@ -478,7 +698,7 @@ def main_cli():
     
     accesslogconsole = logging.StreamHandler()
     accesslogfileformatter = logging.Formatter('[%(asctime)s]%(message)s')
-    #accesslogconsole.setFormatter(accesslogfileformatter)
+    accesslogconsole.setFormatter(accesslogfileformatter)
     accesslogconsole.setLevel(logging.INFO)
     
     accesslogger.addHandler(accesslogconsole)
@@ -523,10 +743,14 @@ def main_cli():
             'shufflepacker': UDPackShufflePacker,
             'shuffleunpacker': UDPackShuffleUnpacker,
             'xorpatchpacker': UDPackXORPatchPacker,
-            'xorpatchunpacker': UDPackXORPatchUnpacker
+            'xorpatchunpacker': UDPackXORPatchUnpacker,
+            'toymodelencryptionpacker': UDPackToyModelEncryptionPacker,
+            'toymodelencryptionunpacker': UDPackToyModelEncryptionUnpacker,
+            'toymodelencryptiondelaypacker': UDPackToyModelEncryptionDelayPacker,
+            'toymodelencryptiondelayunpacker': UDPackToyModelEncryptionDelayUnpacker
             }[local_config['packer'].lower()]
     except KeyError:
-        raise RuntimeError('Packer {} not recognized'.format(local_config['packer']))
+        raise RuntimeError('Invalid packer "{}"'.format(local_config['packer']))
     
     
     # Create listening connection
@@ -545,7 +769,7 @@ def main_cli():
         while True:
             # Workaround for Python Issue 23057 in Windows
             # https://bugs.python.org/issue23057
-            loop.run_until_complete(asyncio.sleep(0.2))
+            loop.run_until_complete(asyncio.sleep(1))
     except (KeyboardInterrupt, SystemExit) as e:
         logger.info("Received {}".format(repr(e)))
     finally:
