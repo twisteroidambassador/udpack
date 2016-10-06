@@ -132,8 +132,6 @@ class UDPackStraightThroughPacker():
         
         self.initialize(config)
         
-        #
-        #self.timeout_handle = None
         self.last_from_receiver = self.loop.time()
         self.last_from_dispatcher = self.loop.time()
         self.loop.call_later(CHECK_TIMEOUT_INTERVAL, self.check_timeout)
@@ -142,7 +140,7 @@ class UDPackStraightThroughPacker():
         self.dispatcher = None
         
         self.dispatcher_task = asyncio.async(self.create_dispatcher())
-        self.dispatcher_ready = False
+        #self.dispatcher_ready = False
         self.dispatcher_task.add_done_callback(self.set_dispatcher_ready)
         
     def initialize(self, config):
@@ -172,15 +170,28 @@ class UDPackStraightThroughPacker():
             self.loop.call_later(CHECK_TIMEOUT_INTERVAL, self.check_timeout)
         
     def set_dispatcher_ready(self, future):
-        self.logger.info('Dispatcher is ready')
-        self.dispatcher_ready = True
+        self.dispatcher_task = None
+        try:
+            transport, protocol = future.result()
+            self.dispatcher = protocol
+            self.logger.info('Dispatcher is ready')
+        except Exception as e:
+            self.logger.warning('Creating dispatcher failed, exception: {}'.format(e))
+            self.disconnect()
     
     def from_receiver(self, data):
-        if not self.dispatcher_ready:
-            # Wait until dispatcher is ready
-            self.dispatcher_task.add_done_callback(
-                lambda future: self.from_receiver(data))
-            return
+        #if not self.dispatcher_ready:
+        if self.dispatcher is None:
+            if self.dispatcher_task is not None:
+                # Wait until dispatcher is ready
+                self.logger.info('Received data from receiver but dispatcher '
+                    'is not yet ready')
+                self.dispatcher_task.add_done_callback(
+                    lambda future: self.from_receiver(data))
+                return
+            else:
+                self.logger.warning('Dispatcher should have been created, but is not')
+                return
             
         self.logger.info('Received data from receiver')
         self.last_from_receiver = self.loop.time()
@@ -250,8 +261,9 @@ class UDPackStraightThroughPacker():
         self.logger.info('Packer disconnecting')
         self.accesslog.info('Connection from {} disconnecting'.format(
                                             self.receiver_recv_addr))
-        self.dispatcher.transport.abort()
-        self.dispatcher = None
+        if self.dispatcher is not None:
+            self.dispatcher.transport.abort()
+            self.dispatcher = None
         del self.receiver.connections[self.receiver_recv_addr]
     
     @asyncio.coroutine
@@ -260,9 +272,9 @@ class UDPackStraightThroughPacker():
         dispatcher = self.loop.create_datagram_endpoint(
             lambda: UDPackDispatcherProtocol(self.loop, self.remoteaddr, self),
             remote_addr = self.remoteaddr)
-        d_transport, d_protocol = yield from dispatcher
-        #self.dispatcher_transport = d_transport
-        self.dispatcher = d_protocol
+        r = yield from dispatcher
+        
+        return r
 
 class UDPackUnpackerMixIn():
     '''Make a packer into an unpacker by reversing direction.
