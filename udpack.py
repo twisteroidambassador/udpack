@@ -134,7 +134,9 @@ class UDPackStraightThroughPacker():
         
         self.last_from_receiver = self.loop.time()
         self.last_from_dispatcher = self.loop.time()
-        self.loop.call_later(CHECK_TIMEOUT_INTERVAL, self.check_timeout)
+        
+        self.timeout_check_handle = None
+        #self.loop.call_later(CHECK_TIMEOUT_INTERVAL, self.check_timeout)
         
         self.connection_established = False
         self.dispatcher = None
@@ -167,7 +169,7 @@ class UDPackStraightThroughPacker():
             self.disconnect()
             return
         else:
-            self.loop.call_later(CHECK_TIMEOUT_INTERVAL, self.check_timeout)
+            self.timeout_check_handle = self.loop.call_later(CHECK_TIMEOUT_INTERVAL, self.check_timeout)
         
     def set_dispatcher_ready(self, future):
         self.dispatcher_task = None
@@ -175,6 +177,8 @@ class UDPackStraightThroughPacker():
             transport, protocol = future.result()
             self.dispatcher = protocol
             self.logger.info('Dispatcher is ready')
+            
+            self.timeout_check_handle = self.loop.call_later(CHECK_TIMEOUT_INTERVAL, self.check_timeout)
         except Exception as e:
             self.logger.warning('Creating dispatcher failed, exception: {}'.format(e))
             self.disconnect()
@@ -190,7 +194,7 @@ class UDPackStraightThroughPacker():
                     lambda future: self.from_receiver(data))
                 return
             else:
-                self.logger.warning('Dispatcher should have been created, but is not')
+                self.logger.warning('Dispatcher does not exist, discarding packet')
                 return
             
         self.logger.info('Received data from receiver')
@@ -261,6 +265,8 @@ class UDPackStraightThroughPacker():
         self.logger.info('Packer disconnecting')
         self.accesslog.info('Connection from {} disconnecting'.format(
                                             self.receiver_recv_addr))
+        if self.timeout_check_handle is not None:
+            self.timeout_check_handle.cancel()
         if self.dispatcher is not None:
             self.dispatcher.transport.abort()
             self.dispatcher = None
