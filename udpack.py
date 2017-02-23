@@ -44,25 +44,25 @@ class UDPackReceiverProtocol(asyncio.DatagramProtocol):
     
     def connection_lost(self, exc):
         if exc is not None:
-            self.logger.warning('Receiver connection_lost, exc: {}'.format(exc))
+            self.logger.warning('Receiver connection_lost, exc: %s', exc, exc_info=True)
         else:
             self.logger.info('Receiver connection_lost')
         for a in self.connections:
             self.loop.call_soon(self.connections[a].disconnect)
     
     def datagram_received(self, data, addr):
-        self.logger.info('Datagram received from {}'.format(addr))
-        self.logger.debug('Raw datagram: \n{}'.format(data))
+        self.logger.info('Datagram received from %s', addr)
+        self.logger.debug('Raw datagram: \n%r', data)
         if addr not in self.connections:
             self.new_connection(addr)
         self.loop.call_soon(self.connections[addr].from_receiver, data)
     
     def error_received(self, exc):
-        self.logger.warning('Receiver error_received, exc: {}'.format(exc))
+        self.logger.warning('Receiver error_received, exc: %s', exc, exc_info=True)
     
     def new_connection(self, addr):
-        self.logger.info('Creating new connection from {}'.format(addr))
-        self.accesslog.info('New connection from {}'.format(addr))
+        self.logger.info('Creating new connection from %s', addr)
+        self.accesslog.info('New connection from %s', addr)
         newpacker = self.packer(self.loop, self.remoteaddr, self, addr, 
                 self.conf, self.connect_timeout, self.idle_timeout)
         self.connections[addr] = newpacker
@@ -85,21 +85,20 @@ class UDPackDispatcherProtocol(asyncio.DatagramProtocol):
     
     def connection_lost(self, exc):
         if exc is not None:
-            self.logger.warning('Dispatcher connection_lost, exc: {}'.format(exc))
+            self.logger.warning('Dispatcher connection_lost, exc: %s', exc, exc_info=True)
         else:
             self.logger.info('Dispatcher connection_lost')
     
     def datagram_received(self, data, addr):
         if addr == self.remoteaddr:
-            self.logger.info('Datagram received from destination, {}'.format(addr))
-            self.logger.debug('Raw datagram: \n{}'.format(data))
+            self.logger.info('Datagram received from destination, %s', addr)
+            self.logger.debug('Raw datagram: \n%r', data)
             self.loop.call_soon(self.packer.from_dispatcher, data)
         else:
-            self.logger.info('Datagram received from non-remote host: {}'.
-                    format(addr))
+            self.logger.info('Datagram received from non-remote host: %s', addr)
     
     def error_received(self, exc):
-        self.logger.warning('Dispatcher error_received, exc: {}'.format(exc))
+        self.logger.warning('Dispatcher error_received, exc: %s', exc, exc_info=True)
 
 
 class UDPackStraightThroughPacker():
@@ -163,9 +162,8 @@ class UDPackStraightThroughPacker():
             
         if t - self.last_from_receiver > timeout:
             self.logger.info('Packer receiver side timed out')
-            self.accesslog.info('Connection from {} timed out: no data received '
-                'by receiver for {} seconds'.format(self.receiver_recv_addr,
-                    timeout))
+            self.accesslog.info('Connection from %s timed out: no data received '
+                'by receiver for %d seconds', self.receiver_recv_addr, timeout)
             self.disconnect()
             return
         else:
@@ -180,7 +178,7 @@ class UDPackStraightThroughPacker():
             
             self.timeout_check_handle = self.loop.call_later(CHECK_TIMEOUT_INTERVAL, self.check_timeout)
         except Exception as e:
-            self.logger.warning('Creating dispatcher failed, exception: {}'.format(e))
+            self.logger.warning('Creating dispatcher failed, exception: %s', e, exc_info=True)
             self.disconnect()
     
     def from_receiver(self, data):
@@ -208,9 +206,8 @@ class UDPackStraightThroughPacker():
         if not self.connection_established:
             self.connection_established = True
             self.logger.info('Bi-directional connection established')
-            self.accesslog.info('Received response for connection from {}, '
-                'bi-directional connection established'.format(
-                    self.receiver_recv_addr))
+            self.accesslog.info('Received response for connection from %s, '
+                'bi-directional connection established', self.receiver_recv_addr)
         self.last_from_dispatcher = self.loop.time()
         #self.update_timeout()
         
@@ -263,8 +260,7 @@ class UDPackStraightThroughPacker():
         
     def disconnect(self):
         self.logger.info('Packer disconnecting')
-        self.accesslog.info('Connection from {} disconnecting'.format(
-                                            self.receiver_recv_addr))
+        self.accesslog.info('Connection from %s disconnecting', self.receiver_recv_addr)
         if self.timeout_check_handle is not None:
             self.timeout_check_handle.cancel()
         if self.dispatcher is not None:
@@ -366,7 +362,7 @@ class UDPackShufflePacker(UDPackStraightThroughPacker):
     
     def get_shuffle_sequence(self, len):
         if len not in self.shuffle_sequence:
-            self.logger.debug('Generating shuffle sequence of length {}'.format(len))
+            self.logger.debug('Generating shuffle sequence of length %d', len)
             random.seed(len + self.random_seed_key)
             s = list(range(len))
             random.shuffle(s)
@@ -712,7 +708,7 @@ def main_cli():
     logger.debug(args)
     
     accesslogger = logging.getLogger('access')
-    accesslogger.setLevel(logging.DEBUG)
+    accesslogger.setLevel(logging.INFO)
     
     accesslogconsole = logging.StreamHandler()
     accesslogfileformatter = logging.Formatter('[%(asctime)s]%(message)s')
