@@ -1,7 +1,7 @@
 # UDPack
 UDPack is an extensible generic UDP packet obfuscator. The purpose of this application is to sit in the path of a UDP data stream, and obfuscate, deobfuscate or otherwise modify the packets.
 
-Python 3.4 or above is required, since this script uses the `asyncio` library. Currently there are no external dependencies.
+Python 3.4 or above is required, since this script uses the `asyncio` library. No hard 3rd-party dependencies. Optional dependency: `PyNaCl`.
 
 **Warning:** It must be stressed that the purpose of this application is *obfuscation*, not *encryption*. Many design decisions have been (and will be) deliberately made against best practices in cryptography, so in all likelihood the obfuscation methods will not resist crypto analysis. **DO NOT** rely on the obfuscation for confidentiality of your data!!!
 
@@ -18,6 +18,8 @@ These packers are available:
 * `ShufflePacker`: shuffles the order of data bytes deterministically, using the random seed as key.
 
 * `XorMaskPacker`, `ReverseOnePlusPacker`, `XorPtrPosPacker`: inspired by the "XOR Patch" for OpenVPN, these 3 packers when combined can emulate any obfuscation method in that patch.
+
+* **New**: `XChaCha20Poly1305Packer`: Encrypt each datagram using XChaCha20Poly1305, making the contents indistinguishable from random bytes. 40 bytes overhead for each datagram. Available if `PyNaCl` is installed.
 
 ## Typical usage
 
