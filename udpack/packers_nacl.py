@@ -1,6 +1,7 @@
 try:
     import nacl.bindings.crypto_aead as aead
     from nacl.bindings.randombytes import randombytes
+
     import_exc = None
 except ImportError as e:
     aead = None
@@ -8,7 +9,6 @@ except ImportError as e:
     import_exc = e
 
 from . import packers_base
-
 
 __all__ = ['XChaCha20Poly1305Packer']
 
@@ -23,6 +23,7 @@ class XChaCha20Poly1305Packer(packers_base.BasePacker):
     Encrypted datagrams are 40 bytes longer than the plaintext (24 for the
     nonce, 16 for the authentication tag).
     """
+
     def __init__(self, key, *args, **kwargs):
         """Initialize packer.
 
