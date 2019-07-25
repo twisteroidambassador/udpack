@@ -276,15 +276,14 @@ class ShufflePacker(BasePacker):
 
     def _get_shuffle_sequence(self, length):
         if length not in self._shuffle_sequence:
-            self._logger.debug('Generating shuffle sequence of length %d', length)
-            self._random.seed(length + self.random_seed_key)
+            self._random.seed(length + self._key)
             s = list(range(length))
             self._random.shuffle(s)
             s2 = list(enumerate(s))
             s2.sort(key=lambda i: i[1])
             s3 = [i[0] for i in s2]
             self._shuffle_sequence[length] = (s, s3)
-        return self.shuffle_sequence[length]
+        return self._shuffle_sequence[length]
 
 
 # The following 3 packers replicate the effect of OpenVPN's "XOR patch".
