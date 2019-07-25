@@ -1,11 +1,11 @@
 # UDPack
 UDPack is an extensible generic UDP packet obfuscator. The purpose of this application is to sit in the path of a UDP data stream, and obfuscate, deobfuscate or otherwise modify the packets.
 
-Python 3.4 or above is required, since this script uses the `asyncio` library. No hard 3rd-party dependencies. Optional dependency: `PyNaCl`.
+Python 3.4 or above is required, since this script uses the `asyncio` library. Using the latest Python release is always strongly recommended. The basic features require no 3rd-party dependencies, but `XChaCha20Poly1305Packer` requires `PyNaCl`.
 
 **Warning:** It must be stressed that the purpose of this application is *obfuscation*, not *encryption*. Many design decisions have been (and will be) deliberately made against best practices in cryptography, so in all likelihood the obfuscation methods will not resist crypto analysis. **DO NOT** rely on the obfuscation for confidentiality of your data!!!
 
-**This is a complete rewrite. The old single-file version lives on in the `old_monolithic` branch.** The old approach of putting obfuscation and network handling all in the same class is ... messy, to put it kindly, and all the subclasses and mixins doesn't make it any better. This new version separates the network part into a separate Manager class and keeps obfuscation in the packers, and use class factory functions instead of mixins to produce derived packers. This makes it much easier to chain different packers together, as demonstrated in the new `PipelineManager`.
+The current version separates the network part into a separate Manager class and keeps obfuscation in the packers, and use class factory functions instead of mixins to produce derived packers. This makes it easy to chain packers together, as demonstrated in the new `PipelineManager`.
 
 These packers are available:
 
@@ -32,6 +32,6 @@ Typically, an unpacker is set up near the server, with its `remote_addr` pointin
     UDP Client ---------- Packer =============== Unpacker ---------- UDP server
                  upstream ==>                      <== downstream
 
-## Notes to developers
+## How to use
 
-The configuration file is no more. Just construct your packer pipeline in code!
+For this one: write code, not configuration. Simply construct your desired pipeline from the available packers and instantiate your packer. See `script.py` for an example.
