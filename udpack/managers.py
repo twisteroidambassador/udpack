@@ -3,6 +3,7 @@
 import asyncio
 import functools
 import logging
+import socket
 from itertools import tee
 
 __all__ = ['create_udpack', 'PipelineManager']
@@ -27,7 +28,8 @@ class ReceiverProtocol(asyncio.DatagramProtocol):
     The manager handles upstream sockets and connection timeout."""
 
     def __init__(self, remoteaddr, manager_factory,
-                 loop=None, connect_timeout=None, idle_timeout=None):
+                 loop=None, connect_timeout=None, idle_timeout=None,
+                 do_not_connect=False):
         self._logger = logging.getLogger('udpack.receiver')
         self._accesslog = logging.getLogger('udpack.access')
 
@@ -38,6 +40,7 @@ class ReceiverProtocol(asyncio.DatagramProtocol):
         self._loop = loop
         self._connect_timeout = connect_timeout
         self._idle_timeout = idle_timeout
+        self._do_not_connect = do_not_connect
         self._managers = {}
         self._transport = None
 
@@ -73,7 +76,8 @@ class ReceiverProtocol(asyncio.DatagramProtocol):
             self._remoteaddr,
             self._transport_sendto_cb_factory(addr),
             self._manager_closed_cb_factory(addr),
-            self._loop, self._connect_timeout, self._idle_timeout)
+            self._loop, self._connect_timeout, self._idle_timeout,
+            self._do_not_connect)
         self._managers[addr] = manager
         # print(self._managers)
 
@@ -96,18 +100,21 @@ class DispatcherProtocol(asyncio.DatagramProtocol):
     """asyncio protocol object responsible for listening from upstream.
     """
 
-    def __init__(self, received_cb, close_cb, loop=None):
+    def __init__(self, remoteaddr, received_cb, close_cb, loop=None):
         self._logger = logging.getLogger('udpack.dispatcher')
+        self._remoteaddr = remoteaddr
         self._received_cb = received_cb
         self._close_cb = close_cb
         self._loop = loop or asyncio.get_event_loop()
         self._transport = None
-        self._remoteaddr = None
 
     def connection_made(self, transport):
         self._logger.info('Dispatcher connection_made')
         self._transport = transport
-        self._remoteaddr = transport.get_extra_info('peername')
+        new_remoteaddr = transport.get_extra_info('peername')
+        if new_remoteaddr:
+            self._logger.debug('Update remote address to %r', new_remoteaddr)
+            self._remoteaddr = new_remoteaddr
 
     def connection_lost(self, exc):
         if exc is not None:
@@ -139,7 +146,8 @@ class BaseManager:
     def __init__(self, remoteaddr, downstream_sendto_cb, close_cb,
                  loop=None,
                  connect_timeout=None,
-                 idle_timeout=None):
+                 idle_timeout=None,
+                 do_not_connect=False):
         """Initialize Manager.
         
         downstream_sendto_cb: callback used to send packets downstream.
@@ -154,11 +162,30 @@ class BaseManager:
         idle_timeout: if there have been packets arriving from upstream, and no
             packets arrived from downstream for idle_timeout sconds, the 
             manager will be closed.
+
+        do_not_connect: do not call connect(remoteaddr) on the upstream
+            datagram socket. Instead, bind to a wild-card address and always
+            specify remoteaddr when sending datagrams upstream. This prevents
+            the upstream socket from failing when the local IP address changes.
+            Requires remoteaddr to contain a literal IP address, not a host
+            name.
         """
         self._logger = logging.getLogger('udpack.manager')
         self._logger.debug('Manager __init__')
 
         self._remoteaddr = remoteaddr
+        if do_not_connect:
+            for self._remote_family in (socket.AF_INET, socket.AF_INET6):
+                try:
+                    socket.inet_pton(self._remote_family, remoteaddr)
+                except OSError:
+                    continue
+                # inet_pton completed without error
+                break
+            else:  # inet_pton failed for both families
+                raise ValueError('remoteaddr is not an IP address literal')
+        else:
+            self._remote_family = None
         self._downstream_sendto_cb = downstream_sendto_cb
         self._close_cb = close_cb
         self._loop = loop or asyncio.get_event_loop()
@@ -168,6 +195,7 @@ class BaseManager:
         self._idle_timeout = (PACKER_DEFAULT_IDLE_TIMEOUT
                               if idle_timeout is None
                               else idle_timeout)
+        self._do_not_connect = do_not_connect
         self._timeout_check_handle = None
         self._last_from_dispatcher = None
         self._last_from_receiver = None
@@ -180,13 +208,21 @@ class BaseManager:
     @asyncio.coroutine
     def _create_dispatcher(self):
         self._logger.debug('Creating dispatcher')
+        if self._remote_family is not None:
+            wildcard_addrinfo = socket.getaddrinfo(
+                None, 0, self._remote_family, socket.SOCK_DGRAM,
+                0, socket.AI_PASSIVE)
+            datagram_args = {'local_addr': wildcard_addrinfo[0][4]}
+        else:
+            datagram_args = {'remote_addr': self._remoteaddr}
         try:
             transport, protocol = yield from self._loop.create_datagram_endpoint(
                 functools.partial(DispatcherProtocol,
+                                  self._remoteaddr,
                                   self.datagram_from_dispatcher,
                                   self.close,
                                   loop=self._loop),
-                remote_addr=self._remoteaddr)
+                **datagram_args)
         except OSError:
             self._logger.warning('Creating dispatcher failed', exc_info=True)
             self.close()
@@ -242,7 +278,10 @@ class BaseManager:
             return
         if self._dispatcher_transport is not None:
             self._logger.debug('Sending datagram to dispatcher')
-            self._dispatcher_transport.sendto(data)
+            if self._remote_family is None:  # dispatcher transport is connected
+                self._dispatcher_transport.sendto(data)
+            else:
+                self._dispatcher_transport.sendto(data, self._remoteaddr)
         else:
             self._logger.debug('Scheduling sending datagram to dispatcher when it becomes ready')
             self._dispatcher_task.add_done_callback(
@@ -325,7 +364,8 @@ class PipelineManager(BaseManager):
 
 
 def create_udpack(loop, manager_factory, local_addr, remote_addr,
-                  connect_timeout=None, idle_timeout=None, **kwargs):
+                  connect_timeout=None, idle_timeout=None,
+                  do_not_connect=False, **kwargs):
     """Create a UDPack instance using the given manager_factory.
     
     Returns the coroutine object returned by loop.create_datagram_endpoint(), 
@@ -338,5 +378,6 @@ def create_udpack(loop, manager_factory, local_addr, remote_addr,
     All other keyword arguments are passed to loop.create_datagram_endpoint().
     """
     protocol = functools.partial(ReceiverProtocol, remote_addr, manager_factory,
-                                 loop, connect_timeout, idle_timeout)
+                                 loop, connect_timeout, idle_timeout,
+                                 do_not_connect)
     return loop.create_datagram_endpoint(protocol, local_addr=local_addr, **kwargs)
