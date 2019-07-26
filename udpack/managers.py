@@ -177,7 +177,7 @@ class BaseManager:
         if do_not_connect:
             for self._remote_family in (socket.AF_INET, socket.AF_INET6):
                 try:
-                    socket.inet_pton(self._remote_family, remoteaddr)
+                    socket.inet_pton(self._remote_family, remoteaddr[0])
                 except OSError:
                     continue
                 # inet_pton completed without error
