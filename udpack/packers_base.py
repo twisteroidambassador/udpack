@@ -10,7 +10,7 @@ __all__ = ['make_pack_only_packer', 'make_unpack_only_packer', 'make_reverse_pac
            'ReverseOnePlusPacker', 'XorPtrPosPacker']
 
 
-class BasePacker():
+class BasePacker:
     """Base class for all packers.
     
     Methods:
