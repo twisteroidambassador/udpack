@@ -7,7 +7,7 @@ import random
 __all__ = ['make_pack_only_packer', 'make_unpack_only_packer', 'make_reverse_packer',
            'NoOpPacker', 'CallSoonPacker', 'ConstDelayPacker', 'DelayPacker',
            'RandomDropPacker', 'ShufflePacker', 'XorMaskPacker',
-           'ReverseOnePlusPacker', 'XorPtrPosPacker']
+           'ReverseOnePlusPacker', 'XorPtrPosPacker', 'PaddingPacker']
 
 
 class BasePacker:
@@ -337,3 +337,41 @@ class XorPtrPosPacker(BasePacker):
 
     def unpack(self, data):
         self.unpacked_cb(self._xor_ptr_pos(data))
+
+
+class PaddingPacker(BasePacker):
+    """Pad the length of each datagram."""
+
+    def __init__(self, calc_padding_length, *args, **kwargs):
+        """Initialize packer.
+
+        calc_padding_length: a callable with signature
+            calc_padding_length(min_output_length) --> pad_length
+            where min_output_length is the minimum possible byte length of the
+            padded datagram, and pad_length is the byte length of the padding.
+        """
+        super().__init__(*args, **kwargs)
+        self._calc_padded_length = calc_padding_length
+
+    def _pad(self, data):
+        orig_length = len(data)
+        pad_length = self._calc_padded_length(orig_length + 2)
+        try:
+            return orig_length.to_bytes(2, 'big') + data + bytes(pad_length)
+        except OverflowError as e:
+            raise ValueError('Unpadded datagram too long') from e
+
+    def _unpad(self, data):
+        padded_length = len(data)
+        if padded_length < 2:
+            raise ValueError('Padded datagram too short')
+        orig_length = int.from_bytes(data[:2], 'big')
+        if orig_length + 2 > padded_length:
+            raise ValueError('Invalid unpadded datagram length')
+        return data[2:2+orig_length]
+
+    def pack(self, data):
+        self.packed_cb(self._pad(data))
+
+    def unpack(self, data):
+        self.unpacked_cb(self._unpad(data))
